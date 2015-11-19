@@ -1082,6 +1082,7 @@ KeyValueStore::Op *KeyValueStore::build_op(list<Transaction*>& tls,
        p != tls.end();
        ++p) {
     bytes += (*p)->get_num_bytes();
+    (*p)->reset_coll_object_tbl();
     ops += (*p)->get_num_ops();
   }
 

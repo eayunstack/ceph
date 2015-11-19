@@ -2778,6 +2778,7 @@ int NewStore::queue_transactions(
   for (list<Transaction*>::iterator p = tls.begin(); p != tls.end(); ++p) {
     (*p)->set_osr(osr);
     txc->ops += (*p)->get_num_ops();
+    (*p)->reset_coll_object_tbl();
     txc->bytes += (*p)->get_num_bytes();
     _txc_add_transaction(txc, *p);
   }

@@ -19,12 +19,14 @@
 #include "common/Thread.h"
 #include "common/Mutex.h"
 #include "common/RWLock.h"
+#include "common/ceph_json.h"
 
 #include "rgw_common.h"
 #include "rgw_rados.h"
 #include "rgw_quota.h"
 #include "rgw_bucket.h"
 #include "rgw_user.h"
+#include <libmemcached/memcached.h>
 
 #define dout_subsys ceph_subsys_rgw
 
@@ -33,6 +35,35 @@ struct RGWQuotaCacheStats {
   RGWStorageStats stats;
   utime_t expiration;
   utime_t async_refresh_time;
+  void decode_json(JSONObj *obj) {
+    JSONDecoder::decode_json("expiration", expiration, obj);
+    JSONDecoder::decode_json("async_refresh_time", async_refresh_time, obj);
+
+    JSONObj *jo = obj->find_obj("stats");
+    if (!jo) {
+      // TODO catch
+      return;
+    }
+    // TODO: ugly code
+    int category;
+    JSONDecoder::decode_json("category", category, jo);
+    stats.category = (RGWObjCategory)category;
+    JSONDecoder::decode_json("num_kb", stats.num_kb, jo);
+    JSONDecoder::decode_json("num_kb_rounded", stats.num_kb_rounded, jo);
+    JSONDecoder::decode_json("num_objects", stats.num_objects, jo);
+  }
+  void dump(Formatter *f) const {
+    f->open_object_section("quotacache");
+    encode_json("expiration", expiration, f);
+    encode_json("async_refresh_time", async_refresh_time, f);
+    f->open_object_section("stats");
+    encode_json("category", int(stats.category), f);
+    encode_json("num_kb", stats.num_kb, f);
+    encode_json("num_kb_rounded", stats.num_kb_rounded, f);
+    encode_json("num_objects", stats.num_objects, f);
+    f->close_section();
+    f->close_section();
+  }
 };
 
 template<class T>
@@ -66,6 +97,13 @@ protected:
   virtual void map_add(const string& user, rgw_bucket& bucket, RGWQuotaCacheStats& qs) = 0;
 
   virtual void data_modified(const string& user, rgw_bucket& bucket) {}
+
+  virtual bool memcached_find(const string& user, rgw_bucket& bucket, RGWQuotaCacheStats& qs) = 0;
+
+  virtual bool memcached_find_and_update(const string& user, rgw_bucket& bucket, typename lru_map<T, RGWQuotaCacheStats>::UpdateContext *ctx) = 0;
+  virtual string memcached_get_id(rgw_bucket& bucket) = 0;
+  virtual void memcached_add(const string& user, rgw_bucket& bucket, RGWQuotaCacheStats& qs) = 0;
+
 public:
   RGWQuotaCache(RGWRados *_store, int size) : store(_store), stats_map(size) {
     async_refcount = new RefCountedWaitObject;
@@ -132,11 +170,14 @@ template<class T>
 int RGWQuotaCache<T>::async_refresh(const string& user, rgw_bucket& bucket, RGWQuotaCacheStats& qs)
 {
   /* protect against multiple updates */
+
+#if 0				// TODO
   StatsAsyncTestSet test_update;
-  if (!map_find_and_update(user, bucket, &test_update)) {
+  if (!memcached_find_and_update(user, bucket, &test_update)) {
     /* most likely we just raced with another update */
     return 0;
   }
+#endif
 
   async_refcount->get();
 
@@ -160,7 +201,7 @@ void RGWQuotaCache<T>::async_refresh_response(const string& user, rgw_bucket& bu
 
   RGWQuotaCacheStats qs;
 
-  map_find(user, bucket, qs);
+  memcached_find(user, bucket, qs);
 
   set_stats(user, bucket, qs, stats);
 
@@ -176,14 +217,14 @@ void RGWQuotaCache<T>::set_stats(const string& user, rgw_bucket& bucket, RGWQuot
   qs.expiration += store->ctx()->_conf->rgw_bucket_quota_ttl;
   qs.async_refresh_time += store->ctx()->_conf->rgw_bucket_quota_ttl / 2;
 
-  map_add(user, bucket, qs);
+  memcached_add(user, bucket, qs);
 }
 
 template<class T>
 int RGWQuotaCache<T>::get_stats(const string& user, rgw_bucket& bucket, RGWStorageStats& stats, RGWQuotaInfo& quota) {
   RGWQuotaCacheStats qs;
   utime_t now = ceph_clock_now(store->ctx());
-  if (map_find(user, bucket, qs)) {
+  if (memcached_find(user, bucket, qs)) {
     if (qs.async_refresh_time.sec() > 0 && now >= qs.async_refresh_time) {
       int r = async_refresh(user, bucket, qs);
       if (r < 0) {
@@ -235,7 +276,7 @@ void RGWQuotaCache<T>::adjust_stats(const string& user, rgw_bucket& bucket, int 
                                  uint64_t added_bytes, uint64_t removed_bytes)
 {
   RGWQuotaStatsUpdate<T> update(objs_delta, added_bytes, removed_bytes);
-  map_find_and_update(user, bucket, &update);
+  memcached_find_and_update(user, bucket, &update);
 
   data_modified(user, bucket);
 }
@@ -301,6 +342,82 @@ protected:
 
   void map_add(const string& user, rgw_bucket& bucket, RGWQuotaCacheStats& qs) {
     stats_map.add(bucket, qs);
+  }
+
+  bool memcached_find(const string& user, rgw_bucket& bucket, RGWQuotaCacheStats& qs) {
+    size_t length;
+    memcached_return rc;
+    char *value = NULL;
+    string id = memcached_get_id(bucket);
+    value = memcached_get(store->ctx()->memc, id.c_str(), id.length(), &length, (uint32_t)0, &rc);
+    if (!value) {
+      return false;
+    }
+    JSONParser p;
+    if (!p.parse(value, length)) {
+      cout << "failed to parse JSON" << std::endl;
+      return false;
+    }
+    // TODO: try/catch
+    qs.decode_json(&p);
+    return true;
+  }
+
+  bool memcached_find_and_update(const string& user, rgw_bucket& bucket, lru_map<rgw_bucket, RGWQuotaCacheStats>::UpdateContext *ctx) {  
+    // TODO: 找到 qs, 用update更新qs, 再写入 memcached
+    memcached_return rc;
+    char *value = NULL;
+    RGWQuotaCacheStats qs;
+    size_t length;
+    string id = memcached_get_id(bucket);
+    value = memcached_get(store->ctx()->memc, id.c_str(), id.length(), &length, (uint32_t)0, &rc);
+    if (!value) {
+      return false;
+    }
+    JSONParser p;
+    if (!p.parse(value, length)) {
+      cout << "failed to parse JSON" << std::endl;
+      return false;
+    }
+    // TODO: try/catch
+    qs.decode_json(&p);
+
+    bool r = true;
+    if (ctx) {
+      r = ctx->update(&qs);
+    }
+    if (!r) {
+      return false;
+    }
+
+    JSONFormatter f(true);
+    std::ostringstream os;
+    qs.dump(&f);
+    f.flush(os);
+    string quota = os.str();
+    ldout(store->ctx(), 0) << "222 cache update: " << quota << dendl;
+    memcached_set(store->ctx()->memc, id.c_str(), id.length(), quota.c_str(), quota.length(), (time_t)180, (uint32_t)0);
+    return true;
+  }
+
+  string memcached_get_id(rgw_bucket& bucket) {
+    string id("bucket");
+    id += ':';
+    id += bucket.name;
+    return id;
+  }
+
+  void memcached_add(const string& user, rgw_bucket& bucket, RGWQuotaCacheStats& qs) {
+    JSONFormatter f(true);
+    qs.dump(&f);
+
+    std::ostringstream os;
+    f.flush(os);
+    string value = os.str();
+    string id = memcached_get_id(bucket);
+    // TODO: delete after release
+    ldout(store->ctx(), 0) << "1111cache add: " << value << dendl;
+    memcached_set(store->ctx()->memc, id.c_str(), id.length(), value.c_str(), value.length(), (time_t)180, (uint32_t)0);
   }
 
   int fetch_stats_from_storage(const string& user, rgw_bucket& bucket, RGWStorageStats& stats);
@@ -487,6 +604,49 @@ protected:
 
   void map_add(const string& user, rgw_bucket& bucket, RGWQuotaCacheStats& qs) {
     stats_map.add(user, qs);
+  }
+
+  bool memcached_find(const string& user, rgw_bucket& bucket, RGWQuotaCacheStats& qs) {
+    size_t length;
+    memcached_return rc;
+    char *value = NULL;
+    string id = memcached_get_id(bucket);
+    value = memcached_get(store->ctx()->memc, id.c_str(), id.length(), &length, (uint32_t)0, &rc);
+    if (!value) {
+      return false;
+    }
+    JSONParser p;
+    if (!p.parse(value, length)) {
+      cout << "failed to parse JSON" << std::endl;
+      return false;
+    }
+    // TODO: try/catch
+    qs.decode_json(&p);
+    return true;    
+  }
+
+  bool memcached_find_and_update(const string& user, rgw_bucket& bucket, lru_map<string, RGWQuotaCacheStats>::UpdateContext *ctx) {
+    return true;
+    //memcached_set(store->ctx()->memc, key, strlen(key), value, strlen(value), (time_t)0, (uint32_t)0);
+  }
+
+  string memcached_get_id(rgw_bucket& bucket) {
+    string id("user");
+    id += ':';
+    id += bucket.name;
+    return id;
+  }
+
+  void memcached_add(const string& user, rgw_bucket& bucket, RGWQuotaCacheStats& qs) {
+    JSONFormatter f(true);
+    qs.dump(&f);
+
+    std::ostringstream os;
+    f.flush(os);
+    string value = os.str();
+    string id = memcached_get_id(bucket);
+    ldout(store->ctx(), 0) << "222 cache add: " << value << dendl;
+    memcached_set(store->ctx()->memc, id.c_str(), id.length(), value.c_str(), value.length(), (time_t)180, (uint32_t)0);
   }
 
   int fetch_stats_from_storage(const string& user, rgw_bucket& bucket, RGWStorageStats& stats);

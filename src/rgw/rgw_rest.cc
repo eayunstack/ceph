@@ -18,6 +18,8 @@
 #include "rgw_client_io.h"
 #include "rgw_resolve.h"
 
+#include <libmemcached/memcached.h>
+
 #define dout_subsys ceph_subsys_rgw
 
 
@@ -179,6 +181,19 @@ void rgw_rest_init(CephContext *cct, RGWRegion& region)
 
   for (map<string, bool>::iterator iter = hostnames_map.begin(); iter != hostnames_map.end(); ++iter) {
     hostnames_list.push_back(iter->first);
+  }
+
+  memcached_return rc;
+  memcached_server_st *servers = NULL;
+  cct->memc= memcached_create(NULL);
+  servers = memcached_server_list_append(servers, "localhost", 11211, &rc);
+  rc= memcached_server_push(cct->memc, servers);
+
+  // TODO: handle failure ?
+  if (rc == MEMCACHED_SUCCESS) {
+      ldout(cct, 0) << "Added server successfully" << dendl;
+  } else {
+        ldout(cct, 0) << "ERROR: Couldn't add server: " << memcached_strerror(cct->memc, rc) << dendl;
   }
 }
 

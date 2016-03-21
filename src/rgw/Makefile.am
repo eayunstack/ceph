@@ -51,7 +51,8 @@ LIBRGW_DEPS += \
 	-lexpat \
 	-lm \
 	-lfcgi \
-	-ldl
+	-ldl \
+        -lmemcached
 
 radosgw_SOURCES = \
 	rgw/rgw_resolve.cc \

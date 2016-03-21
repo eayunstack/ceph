@@ -23,6 +23,8 @@
 #include "common/cmdparse.h"
 #include "include/Spinlock.h"
 
+#include <libmemcached/memcached.h>
+
 class AdminSocket;
 class CephContextServiceThread;
 class PerfCountersCollection;
@@ -51,6 +53,7 @@ using ceph::bufferlist;
  */
 class CephContext {
 public:
+  memcached_st *memc;
   CephContext(uint32_t module_type_);
 
   // ref count!

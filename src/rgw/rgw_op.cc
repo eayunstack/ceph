@@ -1735,6 +1735,10 @@ void RGWPutObj::execute()
     }
   }
 
+  if (s->canned_acl.empty()) {
+    policy = *s->bucket_acl;
+  }
+
   policy.encode(aclbl);
 
   attrs[RGW_ATTR_ACL] = aclbl;

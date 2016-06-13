@@ -735,6 +735,7 @@ written." % (self.name, ret, length))
         Trim the range from the image. It will be logically filled
         with zeroes.
         """
+        self.librbd.rbd_discard.restype = ctypes.c_ssize_t
         ret = self.librbd.rbd_discard(self.image,
                                       c_uint64(offset),
                                       c_uint64(length))

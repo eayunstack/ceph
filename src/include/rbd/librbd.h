@@ -357,7 +357,7 @@ int rbd_diff_iterate(rbd_image_t image,
 		     uint64_t ofs, uint64_t len,
 		     int (*cb)(uint64_t, size_t, int, void *), void *arg);
 ssize_t rbd_write(rbd_image_t image, uint64_t ofs, size_t len, const char *buf);
-int rbd_discard(rbd_image_t image, uint64_t ofs, uint64_t len);
+ssize_t rbd_discard(rbd_image_t image, uint64_t ofs, uint64_t len);
 int rbd_aio_write(rbd_image_t image, uint64_t off, size_t len, const char *buf, rbd_completion_t c);
 int rbd_aio_read(rbd_image_t image, uint64_t off, size_t len, char *buf, rbd_completion_t c);
 int rbd_aio_discard(rbd_image_t image, uint64_t off, uint64_t len, rbd_completion_t c);

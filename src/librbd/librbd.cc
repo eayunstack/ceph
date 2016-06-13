@@ -471,7 +471,7 @@ namespace librbd {
     return librbd::write(ictx, ofs, len, bl.c_str());
   }
 
-  int Image::discard(uint64_t ofs, uint64_t len)
+  ssize_t Image::discard(uint64_t ofs, uint64_t len)
   {
     ImageCtx *ictx = (ImageCtx *)ctx;
     return librbd::discard(ictx, ofs, len);
@@ -1081,7 +1081,7 @@ extern "C" ssize_t rbd_write(rbd_image_t image, uint64_t ofs, size_t len,
   return librbd::write(ictx, ofs, len, buf);
 }
 
-extern "C" int rbd_discard(rbd_image_t image, uint64_t ofs, uint64_t len)
+extern "C" ssize_t rbd_discard(rbd_image_t image, uint64_t ofs, uint64_t len)
 {
   librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
   return librbd::discard(ictx, ofs, len);

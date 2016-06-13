@@ -2695,7 +2695,7 @@ reprotect_and_return_err:
     return mylen;
   }
 
-  int discard(ImageCtx *ictx, uint64_t off, uint64_t len)
+  ssize_t discard(ImageCtx *ictx, uint64_t off, uint64_t len)
   {
     utime_t start_time, elapsed;
     ldout(ictx->cct, 20) << "discard " << ictx << " off = " << off << " len = "

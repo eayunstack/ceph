@@ -121,13 +121,14 @@ public:
     vector<snapid_t> snaps;  ///< src's snaps (if clone)
     snapid_t snap_seq;       ///< src's snap_seq (if head)
     librados::snap_set_t snapset; ///< src snapset (if head)
+    int list_snaps_ret;      ///< return value of list_snaps (if head)
     bool mirror_snapset;
     map<string, bufferlist> attrs; ///< src user attrs
     bool has_omap;
     CopyResults() : object_size(0), started_temp_obj(false),
 		    final_tx(NULL), user_version(0), 
-		    should_requeue(false), mirror_snapset(false),
-		    has_omap(false) {}
+		    should_requeue(false), list_snaps_ret(0),
+		    mirror_snapset(false), has_omap(false) {}
   };
 
   struct CopyOp {

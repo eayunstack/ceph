@@ -5569,7 +5569,9 @@ void ReplicatedPG::_copy_some(ObjectContextRef obc, CopyOpRef cop)
     // list snaps too.
     assert(cop->src.snap == CEPH_NOSNAP);
     ObjectOperation op;
-    op.list_snaps(&cop->results.snapset, NULL);
+    // we need return value of list_snaps to decide
+    // whether a whiteouted object is necessary or not.
+    op.list_snaps(&cop->results.snapset, &cop->results.list_snaps_ret);
     osd->objecter_lock.Lock();
     ceph_tid_t tid = osd->objecter->read(cop->src.oid, cop->oloc, op,
 				    CEPH_SNAPDIR, NULL,
@@ -5907,12 +5909,17 @@ void ReplicatedPG::finish_promote(int r, OpRequestRef op,
   }
 
   bool whiteout = false;
+  // also check return value of list_snaps, as it may fail on
+  // non-existent objects. but when the original op is write
+  // a whiteouted object is still neccessary.
   if (r == -ENOENT &&
       soid.snap == CEPH_NOSNAP &&
       (pool.info.cache_mode == pg_pool_t::CACHEMODE_WRITEBACK ||
        pool.info.cache_mode == pg_pool_t::CACHEMODE_READONLY)) {
-    dout(10) << __func__ << " whiteout " << soid << dendl;
-    whiteout = true;
+      if (results->list_snaps_ret >= 0 || op->may_write()) {
+        dout(10) << __func__ << " whiteout " << soid << dendl;
+        whiteout = true;
+      }
   }
 
   if (r < 0 && !whiteout) {
